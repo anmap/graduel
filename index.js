@@ -3,17 +3,20 @@ const chalk = require('chalk');
 const request = require('superagent');
 const axios = require('axios');
 const parser = require('xml2json');
+const images = require('images');
 const fs = require('fs');
 const path = require('path');
 
 const BASE_URL = 'http://graduel-bfm.limoges.fr/ms/images';
 
 // Get info
-async function getInfo() {
-  console.log('Getting information...');
+async function getFolioInfo(folioNumber, isV) {
+  console.log(`Getting information for ${folioNumber}${isV ? 'V' : 'R'}...`);
+  const PAGE_URL = `${BASE_URL}/B870856101_MS002_${('00' + folioNumber).substr(-4)}${isV ? 'V' : 'R'}`;
+
   return new Promise((resolve, reject) => {
     request
-      .get('http://graduel-bfm.limoges.fr/ms/images/B870856101_MS002_001R/ImageProperties.xml')
+      .get(`${PAGE_URL}/ImageProperties.xml`)
       .buffer()
       .type('xml')
       .end((err, res) => {
@@ -30,27 +33,13 @@ async function getInfo() {
             height: infoRaw.IMAGE_PROPERTIES.HEIGHT,
             tiles: infoRaw.IMAGE_PROPERTIES.NUMTILES,
             tileSize: infoRaw.IMAGE_PROPERTIES.TILESIZE,
+            pageURL: PAGE_URL,
           };
           resolve(pageInfo);
         } catch(e) {
           reject(new Error('Unable to parse info data'));
         }
       });
-    });
-}
-
-// Get tiles
-async function getTiles() {
-  request
-    .get('http://graduel-bfm.limoges.fr/ms/images/B870856101_MS002_001R/TileGroup0')
-    .buffer()
-    .end((err, res) => {
-      // Reject promise if error
-      if (err) {
-        console.error('Get Info Error', err);
-      }
-
-      console.log('TileGroup0 information:', res);
     });
 }
 
@@ -79,11 +68,11 @@ async function downloadRow(tilesPerRow) {
   }
 }
 
-async function downloadTile(tileCode) {
+async function downloadTile(pageURL, tileCode) {
   try {
     const response = await axios({
       method: 'GET',
-      url: `${BASE_URL}/B870856101_MS002_001R/TileGroup0/5-${tileCode}.jpg`,
+      url: `${pageURL}/TileGroup0/5-${tileCode}.jpg`,
       responseType: 'stream'
     });
     return response.data;
@@ -94,7 +83,7 @@ async function downloadTile(tileCode) {
     try {
       const response = await axios({
         method: 'GET',
-        url: `${BASE_URL}/B870856101_MS002_001R/TileGroup1/5-${tileCode}.jpg`,
+        url: `${pageURL}/TileGroup1/5-${tileCode}.jpg`,
         responseType: 'stream'
       });
       return response.data;
@@ -105,7 +94,7 @@ async function downloadTile(tileCode) {
       try {
         const response = await axios({
           method: 'GET',
-          url: `${BASE_URL}/B870856101_MS002_001R/TileGroup2/5-${tileCode}.jpg`,
+          url: `${pageURL}/TileGroup2/5-${tileCode}.jpg`,
           responseType: 'stream'
         });
         return response.data;
@@ -116,19 +105,28 @@ async function downloadTile(tileCode) {
   }
 }
 
-async function exportTiles(img, imgName) {
-  console.log(`Exporting tile: ${imgName}.jpg ...`);
+async function getTiles(pageURL, map) {
   try {
-    const imgPath = path.resolve(__dirname, 'images', imgName + '.jpg');
-    await img.pipe(fs.createWriteStream(imgPath));
-    console.log('File saved!');
+      for (let i = 0; i < map.length; i++) {
+        const currentRow = map[i];
+        for (let k = 0; k < currentRow.length; k++) {
+            const percentage =
+                ((((k + 1) / currentRow.length) + i) / map.length) * 100;
+            process.stdout.write(` Downloading tiles... ${percentage.toFixed(1)}%                       \r`);
+              // Set up path for image
+            const tilePath = path.resolve(__dirname, 'tiles', `${currentRow[k].tileCode}.jpg`);
+            // Request
+            const tile = await downloadTile(pageURL, currentRow[k].tileCode);
+            // Pipe the result stream into a file on disc
+            await tile.pipe(fs.createWriteStream(tilePath));
+        }
+      }
   } catch (error) {
-    console.log('Error', error);
-    throw new Error('Error while saving');
+      console.log('\nERROR GETTING TILES', error);
   }
 }
 
-async function combineTiles(pageNumber, map, originalWidth, originalHeight) {
+async function combineTiles(folioNumber, isV, map, originalWidth, originalHeight) {
   try {
       process.stdout.write(` Creating canvas...                            \r`);
       // Load blank canvas
@@ -145,21 +143,21 @@ async function combineTiles(pageNumber, map, originalWidth, originalHeight) {
                   ((((k + 1) / currentRow.length) + i) / map.length) * 100;
               process.stdout.write(` Combining tiles... ${percentage.toFixed(1)}%                        \r`);
               // Set current tile path
-              const tilePath = `./tiles/tile_${('0000' + i).substr(-4)}_${('0000' + k).substr(-4)}.jpg`;
+              const tilePath = `./tiles/${currentRow[k].tileCode}.jpg`;
               // Put current tile onto canvas
-              await canvas.draw(images(tilePath), currentRow[k][0], currentRow[k][1]);
+              await canvas.draw(images(tilePath), currentRow[k].x  , currentRow[k].y);
           }
       }
 
       // Output result
       process.stdout.write(` Exporting result...                      \r`);
-      await canvas.save(`./pages/page_${('0000' + pageNumber).substr(-4)}.jpg`, {
+      await canvas.save(`./folios/folio_${('00' + folioNumber).substr(-4)}.jpg`, {
           quality: 100
       });
 
       // Clean up tiles folder
-      process.stdout.write(` Cleaning up tiles...                     \r`);
-      await rimraf('tiles/*.*', () => { });
+      // process.stdout.write(` Cleaning up tiles...                     \r`);
+      // await rimraf('tiles/*.*', () => { });
   } catch (error) {
       console.log('\nERROR COMBINING IMAGES', error);
   }
@@ -167,11 +165,10 @@ async function combineTiles(pageNumber, map, originalWidth, originalHeight) {
 
 // Main function
 async function main() {
-  const pageInfo = await getInfo();
-  const matrix = getMatrix(pageInfo);
-  console.log('Matrix', matrix);
-  // const tile = await downloadTile('0-23');
-  // await exportImage(tile, '0-23');
+  // const info = await getFolioInfo(1);
+  // const map = getMatrix(info);
+  // await getTiles(info.pageURL, map);
+  await combineTiles(1, false, map, info.width, info.height);
 }
 
 // Execute main program

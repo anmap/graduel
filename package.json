@@ -16,6 +16,7 @@
     "co-prompt": "^1.0.0",
     "commander": "^2.17.1",
     "image-size": "^0.6.3",
+    "images": "^3.0.1",
     "progress": "^2.0.0",
     "superagent": "^3.8.3",
     "xml2json": "^0.11.2"
